@@ -12,6 +12,8 @@ import bpy
 
 
 phase = os.environ["BLENDER_FARSI_PHASE"]
+print(f"SMOKE_BEGIN phase={phase} blender={bpy.app.version_string} background={bpy.app.background}", flush=True)
+print(f"SMOKE_OPERATOR_REGISTERED={hasattr(bpy.ops.wm, 'farsi_set_language')}", flush=True)
 expected = {
     "set-fa": "fa_IR",
     "verify-fa": "fa_IR",

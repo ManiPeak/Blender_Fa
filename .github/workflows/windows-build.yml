@@ -135,15 +135,25 @@ jobs:
           $install = Join-Path $build.FullName "bin\Release"
           $exe = Join-Path $install "blender.exe"
           if (-not (Test-Path $exe)) { throw "Built blender.exe missing at $exe" }
-          & $exe --version
-          if ($LASTEXITCODE -ne 0) { throw "blender.exe --version failed" }
+          $versionOutput = & $exe --version 2>&1
+          $versionExit = $LASTEXITCODE
+          $versionOutput | ForEach-Object { Write-Host $_ }
+          if ($versionExit -ne 0) { throw "blender.exe --version failed with exit code $versionExit" }
           $env:BLENDER_USER_CONFIG = Join-Path $env:RUNNER_TEMP "blender-farsi-user-config"
           New-Item -ItemType Directory -Force -Path $env:BLENDER_USER_CONFIG | Out-Null
           $smoke = Join-Path $env:GITHUB_WORKSPACE "scripts\windows_smoke.py"
           foreach ($phase in @("set-fa", "verify-fa", "set-en", "verify-en")) {
             $env:BLENDER_FARSI_PHASE = $phase
-            & $exe --background --python $smoke
-            if ($LASTEXITCODE -ne 0) { throw "Blender background smoke test failed in phase $phase" }
+            $phaseLog = Join-Path $env:RUNNER_TEMP "smoke-$phase.log"
+            $phaseOutput = & $exe --background --python $smoke 2>&1
+            $phaseExit = $LASTEXITCODE
+            $phaseOutput | ForEach-Object { Write-Host $_ }
+            if ($phaseExit -ne 0) {
+              "Smoke phase $phase exited with code $phaseExit" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              $phaseOutput | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              Write-Error "Smoke phase $phase failed: $($phaseOutput -join ' | ')"
+              throw "Blender background smoke test failed in phase $phase"
+            }
           }
           "BLENDER_INSTALL=$install" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "BLENDER_BUILD_DIR=$($build.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
