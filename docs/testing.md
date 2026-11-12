@@ -5,7 +5,8 @@
 - Environment inspection: Linux x86_64, Python 3.11.2, Git and GitHub CLI available; no Blender executable, CMake, Ninja, or Windows toolchain found.
 - Upstream source inspection: pinned top-bar and localization source via GitHub API; verified the tag commit and existence of the Persian catalog.
 - Patch application/syntax check: applied the patch to a temporary fixture containing the exact `space_topbar.py` source blob fetched from Blender `v4.5.9`; `git apply --check` succeeded and `python3 -m py_compile` succeeded on the patched file. This did not fetch or build the complete Blender source tree.
-- Project static tests: `python3 -m unittest discover -s tests -v` — 4 tests passed; `python3 scripts/validate_patch.py` passed; `python3 -m compileall -q scripts tests` passed; `git diff --check` passed.
+- Project static tests: `python3 -m unittest discover -s tests -v` — 6 tests passed, including ZIP staging/checksum helper tests using a synthetic fixture; `python3 scripts/validate_patch.py` passed; `python3 -m compileall -q scripts tests` passed; `git diff --check` passed.
+- Windows release workflow: configured to build the pinned source, smoke-test `blender.exe`, verify preference persistence, create the full runtime ZIP, verify SHA-256, and publish alpha/beta tags. It has not yet completed on a Windows runner.
 
 These do not exercise Blender. No application launch, UI rendering, file editing, language switching, performance timing, Windows package, or visual comparison result is claimed.
 

@@ -1,0 +1,203 @@
+name: Windows x64 Blender Farsi build
+
+on:
+  pull_request:
+    paths:
+      - "patches/**"
+      - "scripts/**"
+      - "upstream.lock"
+      - ".github/workflows/windows-build.yml"
+  push:
+    tags:
+      - "v0.*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Optional alpha/beta tag to publish after the build passes (for example v0.1.0-alpha.1)
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: blender-farsi-windows-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows-x64:
+    name: Build, smoke-test, package Windows x64
+    runs-on: windows-2022
+    timeout-minutes: 360
+    steps:
+      - name: Check out Blender Farsi project
+        uses: actions/checkout@v4
+
+      - name: Set up packaging Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Validate optional release tag
+        id: release-tag
+        shell: pwsh
+        env:
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          $tag = $env:INPUT_RELEASE_TAG
+          if ($env:GITHUB_REF_TYPE -eq "tag") { $tag = $env:GITHUB_REF_NAME }
+          if ($tag -and $tag -notmatch '^v\d+\.\d+\.\d+-(alpha|beta)\.\d+$') {
+            throw "Only prerelease tags such as v0.1.0-alpha.1 may be published by this workflow."
+          }
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Fetch and verify the pinned Blender source
+        shell: pwsh
+        run: |
+          $lock = Get-Content "$env:GITHUB_WORKSPACE\upstream.lock" -Raw
+          $tag = [regex]::Match($lock, '(?m)^tag = "([^"]+)"').Groups[1].Value
+          $expected = [regex]::Match($lock, '(?m)^commit = "([0-9a-f]{40})"').Groups[1].Value
+          if (-not $tag -or -not $expected) { throw "Could not read upstream.lock" }
+          $source = Join-Path $env:GITHUB_WORKSPACE "upstream"
+          git clone --depth 1 --branch $tag https://github.com/blender/blender.git $source
+          if ($LASTEXITCODE -ne 0) { throw "Blender source checkout failed" }
+          $actual = (git -C $source rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $actual -ne $expected) {
+            throw "Pinned source mismatch: expected $expected, got $actual"
+          }
+          "BLENDER_SOURCE=$source" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "BLENDER_UPSTREAM_SHA=$actual" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Download Blender build dependencies
+        shell: pwsh
+        run: |
+          Set-Location $env:BLENDER_SOURCE
+          git lfs install --local
+          if ($LASTEXITCODE -ne 0) { throw "Git LFS setup failed" }
+          # Pre-initialize the large library submodule so Blender's Windows
+          # helper does not wait for an interactive "download libraries?" prompt.
+          git submodule update --init --depth 1 --progress lib/windows_x64
+          if ($LASTEXITCODE -ne 0) { throw "Windows x64 library submodule checkout failed" }
+          git -C lib/windows_x64 lfs pull
+          if ($LASTEXITCODE -ne 0) { throw "Windows x64 Git LFS libraries download failed" }
+          & $env:ComSpec /d /c "make.bat update"
+          if ($LASTEXITCODE -ne 0) { throw "Blender make.bat update failed" }
+          $actual = (git rev-parse HEAD).Trim()
+          if ($actual -ne $env:BLENDER_UPSTREAM_SHA) {
+            throw "Dependency update unexpectedly changed Blender source HEAD to $actual"
+          }
+
+      - name: Apply the Blender Farsi source patch
+        shell: pwsh
+        run: |
+          git -C $env:BLENDER_SOURCE apply --check "$env:GITHUB_WORKSPACE\patches\0001-topbar-language-selector.patch"
+          if ($LASTEXITCODE -ne 0) { throw "Patch does not apply to the pinned source" }
+          git -C $env:BLENDER_SOURCE apply "$env:GITHUB_WORKSPACE\patches\0001-topbar-language-selector.patch"
+          if ($LASTEXITCODE -ne 0) { throw "Applying the Blender Farsi patch failed" }
+          python -m py_compile "$env:BLENDER_SOURCE\scripts\startup\bl_ui\space_topbar.py"
+          if ($LASTEXITCODE -ne 0) { throw "Patched Blender startup module has invalid Python syntax" }
+
+      - name: Build Blender with the upstream Windows build wrapper
+        shell: pwsh
+        run: |
+          Set-Location $env:BLENDER_SOURCE
+          & $env:ComSpec /d /c "make.bat release x64 2022"
+          if ($LASTEXITCODE -ne 0) { throw "Blender Windows x64 build failed" }
+
+      - name: Run executable and language-persistence smoke tests
+        shell: pwsh
+        run: |
+          $parent = Split-Path $env:BLENDER_SOURCE -Parent
+          $build = Get-ChildItem $parent -Directory -Filter "build_windows_Release_x64_vc*_Release" | Select-Object -First 1
+          if (-not $build) { throw "Could not find Blender's Windows release build directory" }
+          $install = Join-Path $build.FullName "bin\Release"
+          $exe = Join-Path $install "blender.exe"
+          if (-not (Test-Path $exe)) { throw "Built blender.exe missing at $exe" }
+          & $exe --version
+          if ($LASTEXITCODE -ne 0) { throw "blender.exe --version failed" }
+          $env:BLENDER_USER_CONFIG = Join-Path $env:RUNNER_TEMP "blender-farsi-user-config"
+          New-Item -ItemType Directory -Force -Path $env:BLENDER_USER_CONFIG | Out-Null
+          $smoke = Join-Path $env:GITHUB_WORKSPACE "scripts\windows_smoke.py"
+          foreach ($phase in @("set-fa", "verify-fa", "set-en", "verify-en")) {
+            $env:BLENDER_FARSI_PHASE = $phase
+            & $exe --background --python $smoke
+            if ($LASTEXITCODE -ne 0) { throw "Blender background smoke test failed in phase $phase" }
+          }
+          "BLENDER_INSTALL=$install" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "BLENDER_BUILD_DIR=$($build.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Record build metadata and create the Windows package
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ steps.release-tag.outputs.tag }}
+        run: |
+          $version = $env:RELEASE_TAG
+          if (-not $version) { $version = "prototype-build-$env:GITHUB_RUN_NUMBER" }
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsVersion = "unknown"
+          if (Test-Path $vswhere) {
+            $vsVersion = (& $vswhere -latest -products * -property catalog_productDisplayVersion).Trim()
+          }
+          $msvcRoot = & $vswhere -latest -products * -property installationPath
+          $compiler = "Visual Studio $vsVersion"
+          if ($msvcRoot) {
+            $compilerDirs = Get-ChildItem (Join-Path $msvcRoot "VC\Tools\MSVC") -Directory -ErrorAction SilentlyContinue | Sort-Object Name
+            if ($compilerDirs) { $compiler += "; MSVC toolset $($compilerDirs[-1].Name)" }
+          }
+          $artifacts = Join-Path $env:GITHUB_WORKSPACE "artifacts"
+          New-Item -ItemType Directory -Force -Path $artifacts | Out-Null
+          @(
+            "Product: Blender Farsi prerelease"
+            "Blender version: 4.5.9 LTS"
+            "Blender source commit: $env:BLENDER_UPSTREAM_SHA"
+            "Blender Farsi project commit: $env:GITHUB_SHA"
+            "Build OS: $([System.Environment]::OSVersion.VersionString)"
+            "Runner image: windows-2022"
+            "Compiler: $compiler"
+            "Build configuration: upstream make.bat release x64 2022"
+            "Dependencies: pinned by the Blender source revision; retrieved with make.bat update"
+            "Build log workflow: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          ) | Set-Content (Join-Path $artifacts "build-info.txt") -Encoding utf8
+          python "$env:GITHUB_WORKSPACE\scripts\package_windows.py" `
+            --install-dir $env:BLENDER_INSTALL `
+            --project-root $env:GITHUB_WORKSPACE `
+            --upstream-root $env:BLENDER_SOURCE `
+            --output-dir $artifacts `
+            --version $version `
+            --build-info (Join-Path $artifacts "build-info.txt")
+          if ($LASTEXITCODE -ne 0) { throw "Windows package creation failed" }
+          $zip = Get-ChildItem $artifacts -Filter "*.zip" | Select-Object -First 1
+          $sha = (Get-FileHash $zip.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          $line = Get-Content "$($zip.FullName).sha256" -Raw
+          if (-not $line.StartsWith($sha)) { throw "Generated package checksum verification failed" }
+          "BLENDER_PACKAGE=$($zip.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "BLENDER_CHECKSUM=$($zip.FullName).sha256" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Verified SHA-256 $sha"
+
+      - name: Upload the verified package as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Blender-Farsi-Windows-x64-${{ github.run_number }}
+          path: |
+            artifacts/*.zip
+            artifacts/*.sha256
+            artifacts/build-info.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish prerelease and attach the Windows package
+        if: steps.release-tag.outputs.tag != '' && (github.event_name == 'workflow_dispatch' || github.ref_type == 'tag')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release-tag.outputs.tag }}
+        run: |
+          gh release create $env:RELEASE_TAG `
+            $env:BLENDER_PACKAGE `
+            $env:BLENDER_CHECKSUM `
+            --repo $env:GITHUB_REPOSITORY `
+            --target $env:GITHUB_SHA `
+            --title "Blender Farsi $env:RELEASE_TAG" `
+            --notes-file "$env:GITHUB_WORKSPACE\docs\release-notes-alpha.md" `
+            --prerelease
+          if ($LASTEXITCODE -ne 0) { throw "GitHub prerelease creation or asset upload failed" }

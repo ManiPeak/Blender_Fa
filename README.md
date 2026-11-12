@@ -24,7 +24,7 @@
 | Persian UI translations | **Upstream foundation exists** | Blender 4.5.9 includes `locale/po/fa.po`; coverage is incomplete upstream and is not represented as complete here |
 | Visual refinement | **Design specification** | `docs/design-system.md`; native theme work and visual comparison remain |
 | Original layout preservation | **Source-level intent** | Adds one menu entry to the existing top-bar menu sequence; visual/workspace regression testing remains |
-| Windows x64 package | **Blocked in this environment** | Current workspace is Linux x86_64 and has no Blender build toolchain or Blender executable |
+| Windows x64 package | **Workflow configured; build unverified** | `.github/workflows/windows-build.yml` targets Windows 2022; no successful application build/package yet |
 | Automated validation | **Static checks** | `python3 -m unittest discover -s tests -v`; not a Blender integration suite |
 | GitHub Release | **Not available** | No built or verified package exists, so no release is published |
 
@@ -99,8 +99,9 @@ These checks validate the patch format, pinned baseline references, and project-
 - [ ] Build and run Blender on a supported developer host; verify switching, persistence, RTL, and core workflows.
 - [ ] Implement and test native theme refinements with original-layout screenshot comparisons.
 - [ ] Expand and review Persian terminology using Blender's translation workflow.
-- [ ] Produce a verified Windows x64 build, checksums, and installation guide.
-- [ ] Publish a release only after the actual package and required tests are verified.
+- [x] Configure a Windows x64 CI build, smoke-test, package, and prerelease workflow.
+- [ ] Successfully run and verify the actual Windows x64 build and package.
+- [ ] Publish an alpha release only after the Windows build and package checks pass.
 
 ## Credits and license
 
