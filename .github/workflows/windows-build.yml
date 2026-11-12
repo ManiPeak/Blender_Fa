@@ -113,6 +113,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Blender Windows x64 build failed" }
 
       - name: Run executable and language-persistence smoke tests
+        id: windows-smoke
+        continue-on-error: true
         shell: pwsh
         run: |
           $diagnosticPath = Join-Path $env:RUNNER_TEMP "blender-farsi-smoke-diagnostics.txt"
@@ -129,20 +131,27 @@ jobs:
             if ($versionExit -ne 0) { throw "blender.exe --version failed with exit code $versionExit; $($versionOutput -join ' | ')" }
             $env:BLENDER_USER_CONFIG = Join-Path $env:RUNNER_TEMP "blender-farsi-user-config"
             New-Item -ItemType Directory -Force -Path $env:BLENDER_USER_CONFIG | Out-Null
+            "BLENDER_INSTALL=$install" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            "BLENDER_BUILD_DIR=$($build.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
             $smoke = Join-Path $env:GITHUB_WORKSPACE "scripts\windows_smoke.py"
             foreach ($phase in @("set-fa", "verify-fa", "set-en", "verify-en")) {
               $env:BLENDER_FARSI_PHASE = $phase
-              $phaseOutput = & $exe --background --python $smoke 2>&1
-              $phaseExit = $LASTEXITCODE
-              $phaseOutput | ForEach-Object { Write-Host $_ }
-              if ($phaseExit -ne 0) {
-                "Phase $phase exited with code $phaseExit" | Set-Content $diagnosticPath
-                $phaseOutput | Add-Content $diagnosticPath
-                throw "Blender background smoke test failed in phase $phase"
+              $env:BLENDER_FARSI_RESULT = Join-Path $env:RUNNER_TEMP "smoke-$phase.result.txt"
+              Remove-Item $env:BLENDER_FARSI_RESULT -Force -ErrorAction SilentlyContinue
+              $process = Start-Process -FilePath $exe -ArgumentList "--python `"$smoke`"" -WorkingDirectory $install -PassThru
+              if (-not $process.WaitForExit(180000)) {
+                Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+                throw "Blender GUI did not exit within three minutes during phase $phase"
+              }
+              $process.Refresh()
+              $phaseResult = if (Test-Path $env:BLENDER_FARSI_RESULT) { Get-Content $env:BLENDER_FARSI_RESULT -Raw } else { "No result file; process exit code $($process.ExitCode)" }
+              Write-Host $phaseResult
+              if ($process.ExitCode -ne 0 -or -not $phaseResult.StartsWith("PASS ")) {
+                "Phase $phase exited with code $($process.ExitCode)" | Set-Content $diagnosticPath
+                $phaseResult | Add-Content $diagnosticPath
+                throw "Blender GUI smoke test failed in phase $phase"
               }
             }
-            "BLENDER_INSTALL=$install" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-            "BLENDER_BUILD_DIR=$($build.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           }
           catch {
             $detail = $_.Exception.Message
@@ -154,7 +163,7 @@ jobs:
           }
 
       - name: Surface Windows build diagnostics
-        if: failure()
+        if: failure() || steps.windows-smoke.outcome == 'failure'
         shell: pwsh
         run: |
           $details = [System.Collections.Generic.List[string]]::new()
@@ -229,3 +238,9 @@ jobs:
             artifacts/build-info.txt
           if-no-files-found: error
           retention-days: 14
+
+      - name: Require passing Windows GUI smoke tests
+        if: steps.windows-smoke.outcome == 'failure'
+        shell: pwsh
+        run: |
+          throw "The Blender executable was built and packaged, but GUI language-switch smoke tests failed; refusing to mark the build successful."

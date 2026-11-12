@@ -8,6 +8,6 @@ The build contains a small native top-menu selector for **فارسی** and **Eng
 
 ### Verification and limitations
 
-The release workflow records the exact source/project commits and Windows toolchain in `build-info.txt`. It builds the pinned Blender source, launches `blender.exe --version`, and runs background smoke tests for menu-operator registration, Persian/English preference switching, preference persistence across restarts, and preservation of unsaved in-memory scene data.
+The release workflow records the exact source/project commits and Windows toolchain in `build-info.txt`. It builds the pinned Blender source, launches `blender.exe --version`, and launches Blender's Windows GUI to test menu/operator registration, Persian/English preference switching, preference persistence across restarts, and preservation of unsaved in-memory scene data.
 
 These checks do **not** verify interactive UI rendering, visual layout against stock Blender, high-DPI/RTL text behavior, or Windows 10/11 desktop compatibility. Treat this as a developer preview, keep backups of important work, and report issues with the build metadata attached.
