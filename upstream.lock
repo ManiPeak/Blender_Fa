@@ -1,0 +1,8 @@
+# Blender source baseline selected after inspecting the repository tree and UI/localization source.
+# The tag resolves to a fixed commit; scripts validate the commit rather than trusting the tag.
+repository = "https://github.com/blender/blender.git"
+tag = "v4.5.9"
+commit = "8bf95cbd38d1456c94e9d751f3804eea4d5b137b"
+version = "4.5.9 LTS"
+source_file_for_language_menu = "scripts/startup/bl_ui/space_topbar.py"
+persian_catalog = "locale/po/fa.po"

@@ -1,0 +1,26 @@
+English,Persian (review draft),Notes
+Object Mode,حالت شیء,Keep distinct from Edit Mode
+Edit Mode,حالت ویرایش,Do not translate API identifiers
+Mesh,توری,Common modeling term; review against upstream usage
+Vertex,رأس,Mesh component
+Edge,لبه,Mesh component
+Face,وجه,Mesh component
+Transform,تبدیل,Context-dependent operation family
+Move,جابجایی,Operator description; keep shortcut separate
+Rotate,چرخش,Operator description
+Scale,مقیاس,Operator description
+Modifier,تعدیل‌گر,Review consistency with existing fa.po terminology
+Material,ماده,Material properties/shading context
+Shader,سایه‌زن,Technical term; retain common abbreviations when needed
+Node,گره,Node editor; never reverse node/link direction
+UV Editing,ویرایش UV,Keep UV identifier in Latin script
+Sculpting,مجسمه‌سازی,Workspace/mode label
+Keyframe,فریم کلیدی,Animation context
+Timeline,خط زمان,Editor name
+Dope Sheet,برگه زمان‌بندی,Keep this editor distinct from Timeline
+Render,رندر,Common loanword; review per UI context
+Camera,دوربین,Camera object/data distinction may need context
+Light,نور,Object type versus illumination may vary by context
+Open,باز کردن,File operation
+Save,ذخیره,File operation; do not imply document save on language change
+Cancel,لغو,Dialog operation
