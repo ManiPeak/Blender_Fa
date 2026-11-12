@@ -7,18 +7,10 @@ on:
       - "scripts/**"
       - "upstream.lock"
       - ".github/workflows/windows-build.yml"
-  push:
-    tags:
-      - "v0.*"
   workflow_dispatch:
-    inputs:
-      release_tag:
-        description: Optional alpha/beta tag to publish after the build passes (for example v0.1.0-alpha.1)
-        required: false
-        type: string
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: blender-farsi-windows-${{ github.ref }}
@@ -32,24 +24,13 @@ jobs:
     steps:
       - name: Check out Blender Farsi project
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Set up packaging Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
-      - name: Validate optional release tag
-        id: release-tag
-        shell: pwsh
-        env:
-          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
-        run: |
-          $tag = $env:INPUT_RELEASE_TAG
-          if ($env:GITHUB_REF_TYPE -eq "tag") { $tag = $env:GITHUB_REF_NAME }
-          if ($tag -and $tag -notmatch '^v\d+\.\d+\.\d+-(alpha|beta)\.\d+$') {
-            throw "Only prerelease tags such as v0.1.0-alpha.1 may be published by this workflow."
-          }
-          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       - name: Fetch and verify the pinned Blender source
         shell: pwsh
@@ -129,42 +110,62 @@ jobs:
       - name: Run executable and language-persistence smoke tests
         shell: pwsh
         run: |
-          $parent = Split-Path $env:BLENDER_SOURCE -Parent
-          $build = Get-ChildItem $parent -Directory -Filter "build_windows_Release_x64_vc*_Release" | Select-Object -First 1
-          if (-not $build) { throw "Could not find Blender's Windows release build directory" }
-          $install = Join-Path $build.FullName "bin\Release"
-          $exe = Join-Path $install "blender.exe"
-          if (-not (Test-Path $exe)) { throw "Built blender.exe missing at $exe" }
-          $versionOutput = & $exe --version 2>&1
-          $versionExit = $LASTEXITCODE
-          $versionOutput | ForEach-Object { Write-Host $_ }
-          if ($versionExit -ne 0) { throw "blender.exe --version failed with exit code $versionExit" }
-          $env:BLENDER_USER_CONFIG = Join-Path $env:RUNNER_TEMP "blender-farsi-user-config"
-          New-Item -ItemType Directory -Force -Path $env:BLENDER_USER_CONFIG | Out-Null
-          $smoke = Join-Path $env:GITHUB_WORKSPACE "scripts\windows_smoke.py"
-          foreach ($phase in @("set-fa", "verify-fa", "set-en", "verify-en")) {
-            $env:BLENDER_FARSI_PHASE = $phase
-            $phaseLog = Join-Path $env:RUNNER_TEMP "smoke-$phase.log"
-            $phaseOutput = & $exe --background --python $smoke 2>&1
-            $phaseExit = $LASTEXITCODE
-            $phaseOutput | ForEach-Object { Write-Host $_ }
-            if ($phaseExit -ne 0) {
-              "Smoke phase $phase exited with code $phaseExit" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-              $phaseOutput | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-              Write-Error "Smoke phase $phase failed: $($phaseOutput -join ' | ')"
-              throw "Blender background smoke test failed in phase $phase"
+          $diagnosticPath = Join-Path $env:RUNNER_TEMP "blender-farsi-smoke-diagnostics.txt"
+          try {
+            $parent = Split-Path $env:BLENDER_SOURCE -Parent
+            $build = Get-ChildItem $parent -Directory -Filter "build_windows_Release_x64_vc*_Release" | Select-Object -First 1
+            if (-not $build) { throw "Could not find Blender's Windows release build directory under $parent" }
+            $install = Join-Path $build.FullName "bin\Release"
+            $exe = Join-Path $install "blender.exe"
+            if (-not (Test-Path $exe)) { throw "Built blender.exe missing at $exe" }
+            $versionOutput = & $exe --version 2>&1
+            $versionExit = $LASTEXITCODE
+            $versionOutput | ForEach-Object { Write-Host $_ }
+            if ($versionExit -ne 0) { throw "blender.exe --version failed with exit code $versionExit; $($versionOutput -join ' | ')" }
+            $env:BLENDER_USER_CONFIG = Join-Path $env:RUNNER_TEMP "blender-farsi-user-config"
+            New-Item -ItemType Directory -Force -Path $env:BLENDER_USER_CONFIG | Out-Null
+            $smoke = Join-Path $env:GITHUB_WORKSPACE "scripts\windows_smoke.py"
+            foreach ($phase in @("set-fa", "verify-fa", "set-en", "verify-en")) {
+              $env:BLENDER_FARSI_PHASE = $phase
+              $phaseOutput = & $exe --background --python $smoke 2>&1
+              $phaseExit = $LASTEXITCODE
+              $phaseOutput | ForEach-Object { Write-Host $_ }
+              if ($phaseExit -ne 0) {
+                "Phase $phase exited with code $phaseExit" | Set-Content $diagnosticPath
+                $phaseOutput | Add-Content $diagnosticPath
+                throw "Blender background smoke test failed in phase $phase"
+              }
             }
+            "BLENDER_INSTALL=$install" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            "BLENDER_BUILD_DIR=$($build.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           }
-          "BLENDER_INSTALL=$install" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "BLENDER_BUILD_DIR=$($build.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          catch {
+            $detail = $_.Exception.Message
+            if (Test-Path $diagnosticPath) { $detail += " | " + ((Get-Content $diagnosticPath -Raw).Trim()) }
+            $detail = $detail -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
+            if ($detail.Length -gt 5000) { $detail = $detail.Substring(0, 5000) }
+            [Console]::Out.WriteLine("::error title=Windows Blender smoke diagnostics::$detail")
+            throw
+          }
+
+      - name: Surface Windows smoke-test diagnostics
+        if: failure()
+        shell: pwsh
+        run: |
+          $diagnosticPath = Join-Path $env:RUNNER_TEMP "blender-farsi-smoke-diagnostics.txt"
+          if (Test-Path $diagnosticPath) {
+            $detail = (Get-Content $diagnosticPath -Raw).Trim()
+          } else {
+            $detail = "No smoke diagnostic file was produced; inspect the failing step output."
+          }
+          $detail = $detail -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
+          if ($detail.Length -gt 5000) { $detail = $detail.Substring(0, 5000) }
+          [Console]::Out.WriteLine("::error title=Windows smoke details::$detail")
 
       - name: Record build metadata and create the Windows package
         shell: pwsh
-        env:
-          RELEASE_TAG: ${{ steps.release-tag.outputs.tag }}
         run: |
-          $version = $env:RELEASE_TAG
-          if (-not $version) { $version = "prototype-build-$env:GITHUB_RUN_NUMBER" }
+          $version = "prototype-build-$env:GITHUB_RUN_NUMBER"
           $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
           $vsVersion = "unknown"
           if (Test-Path $vswhere) {
@@ -178,11 +179,12 @@ jobs:
           }
           $artifacts = Join-Path $env:GITHUB_WORKSPACE "artifacts"
           New-Item -ItemType Directory -Force -Path $artifacts | Out-Null
+          $projectSha = (git -C $env:GITHUB_WORKSPACE rev-parse HEAD).Trim()
           @(
             "Product: Blender Farsi prerelease"
             "Blender version: 4.5.9 LTS"
             "Blender source commit: $env:BLENDER_UPSTREAM_SHA"
-            "Blender Farsi project commit: $env:GITHUB_SHA"
+            "Blender Farsi project commit: $projectSha"
             "Build OS: $([System.Environment]::OSVersion.VersionString)"
             "Runner image: windows-2022"
             "Compiler: $compiler"
@@ -216,20 +218,3 @@ jobs:
             artifacts/build-info.txt
           if-no-files-found: error
           retention-days: 14
-
-      - name: Publish prerelease and attach the Windows package
-        if: steps.release-tag.outputs.tag != '' && (github.event_name == 'workflow_dispatch' || github.ref_type == 'tag')
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ steps.release-tag.outputs.tag }}
-        run: |
-          gh release create $env:RELEASE_TAG `
-            $env:BLENDER_PACKAGE `
-            $env:BLENDER_CHECKSUM `
-            --repo $env:GITHUB_REPOSITORY `
-            --target $env:GITHUB_SHA `
-            --title "Blender Farsi $env:RELEASE_TAG" `
-            --notes-file "$env:GITHUB_WORKSPACE\docs\release-notes-alpha.md" `
-            --prerelease
-          if ($LASTEXITCODE -ne 0) { throw "GitHub prerelease creation or asset upload failed" }

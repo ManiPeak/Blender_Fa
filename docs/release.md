@@ -1,6 +1,6 @@
 # Release checklist
 
-No release is currently available until the Windows build workflow completes. `.github/workflows/windows-build.yml` builds a full pinned Blender source tree on Windows Server 2022, runs background smoke tests, packages the complete install tree as a ZIP, verifies its SHA-256, and uploads a temporary workflow artifact. The `.exe` is included inside the ZIP with required DLLs and data; it is not a standalone single-file executable. Pushing a valid `vX.Y.Z-alpha.N` or `vX.Y.Z-beta.N` tag causes the workflow to publish a prerelease only after all build and smoke-test steps succeed. The workflow itself has not yet been verified by a successful Windows build.
+No release is currently available until the Windows build and package checks complete. `.github/workflows/windows-build.yml` builds the pinned source on Windows Server 2022, runs background smoke tests, packages the complete install tree as a ZIP, verifies SHA-256, and uploads a temporary workflow artifact. `.github/workflows/windows-release.yml` can publish only an alpha/beta tag that matches the exact commit of a successful build run, after rechecking the archived package and checksum. The `.exe` is included inside the ZIP with required DLLs and data; it is not a standalone single-file executable. Neither workflow has yet completed successfully end-to-end.
 
 ## Required evidence
 

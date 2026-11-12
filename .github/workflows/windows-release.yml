@@ -1,0 +1,91 @@
+name: Publish Blender Farsi Windows prerelease
+
+on:
+  push:
+    tags:
+      - "v0.*"
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    name: Verify and publish the built Windows ZIP
+    runs-on: windows-2022
+    steps:
+      - name: Check out tagged project source
+        uses: actions/checkout@v4
+
+      - name: Set up packaging Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Validate prerelease tag and locate the successful Windows build
+        id: build
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          if ($tag -notmatch '^v\d+\.\d+\.\d+-(alpha|beta)\.\d+$') {
+            throw "Only alpha/beta tags such as v0.1.0-alpha.1 can publish a prerelease."
+          }
+          $endpoint = "repos/$env:GITHUB_REPOSITORY/actions/workflows/windows-build.yml/runs?head_sha=$env:GITHUB_SHA&per_page=100"
+          $response = gh api $endpoint | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw "Could not query successful Windows build runs" }
+          $buildRun = $response.workflow_runs | Where-Object { $_.head_sha -eq $env:GITHUB_SHA -and $_.conclusion -eq "success" } | Sort-Object created_at -Descending | Select-Object -First 1
+          if (-not $buildRun) { throw "No successful Windows build exists for tagged commit $env:GITHUB_SHA" }
+          $artifactResponse = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$($buildRun.id)/artifacts" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw "Could not locate the Windows build artifact" }
+          $artifact = $artifactResponse.artifacts | Where-Object { -not $_.expired -and $_.name -like "Blender-Farsi-Windows-x64-*" } | Sort-Object created_at -Descending | Select-Object -First 1
+          if (-not $artifact) { throw "No unexpired Blender Farsi Windows package artifact exists for build run $($buildRun.id)" }
+          "run_id=$($buildRun.id)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "artifact_name=$($artifact.name)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "build_run_url=$($buildRun.html_url)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "project_commit=$env:GITHUB_SHA" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+
+      - name: Download the previously tested Windows build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.build.outputs.artifact_name }}
+          run-id: ${{ steps.build.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: artifacts
+
+      - name: Verify package layout, build metadata, and SHA-256
+        shell: pwsh
+        run: |
+          $package = Get-ChildItem "$env:GITHUB_WORKSPACE\artifacts" -Filter "*.zip" | Select-Object -First 1
+          if (-not $package) { throw "The Windows ZIP is missing" }
+          $checksumPath = "$($package.FullName).sha256"
+          if (-not (Test-Path $checksumPath)) { throw "The Windows SHA-256 file is missing" }
+          $actual = (Get-FileHash $package.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          $recorded = (Get-Content $checksumPath -Raw).Split(' ')[0].Trim()
+          if ($actual -ne $recorded) { throw "Package checksum mismatch: $actual != $recorded" }
+          python "$env:GITHUB_WORKSPACE\scripts\verify_windows_package.py" $package.FullName --project-commit $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { throw "Windows package content verification failed" }
+          $releaseName = "Blender-Farsi-$env:GITHUB_REF_NAME-Windows-x64.zip"
+          $releasePath = Join-Path $env:GITHUB_WORKSPACE "artifacts\$releaseName"
+          Move-Item $package.FullName $releasePath
+          $releaseChecksum = "$releasePath.sha256"
+          "$actual  $releaseName" | Set-Content $releaseChecksum -Encoding ascii
+          "package=$releasePath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "checksum=$releaseChecksum" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "sha256=$actual" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+
+      - name: Create prerelease and attach the complete Windows package
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create $env:GITHUB_REF_NAME `
+            $env:package `
+            $env:checksum `
+            --repo $env:GITHUB_REPOSITORY `
+            --target $env:GITHUB_SHA `
+            --title "Blender Farsi $env:GITHUB_REF_NAME" `
+            --notes-file "$env:GITHUB_WORKSPACE\docs\release-notes-alpha.md" `
+            --prerelease
+          if ($LASTEXITCODE -ne 0) { throw "GitHub prerelease creation or asset upload failed" }

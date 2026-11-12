@@ -5,8 +5,10 @@ import pathlib
 import tempfile
 import unittest
 import zipfile
+import tomllib
 
 from scripts.package_windows import create_package
+from scripts.verify_windows_package import verify
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -24,7 +26,12 @@ class PackagingHelperTests(unittest.TestCase):
             upstream.mkdir()
             (upstream / "COPYING").write_text("upstream license\n")
             build_info = root / "build-info.txt"
-            build_info.write_text("test build metadata\n")
+            upstream_sha = tomllib.loads((ROOT / "upstream.lock").read_text())["commit"]
+            project_sha = "a" * 40
+            build_info.write_text(
+                f"Blender source commit: {upstream_sha}\n"
+                f"Blender Farsi project commit: {project_sha}\n"
+            )
             output = root / "output"
 
             archive, checksum = create_package(
@@ -43,6 +50,7 @@ class PackagingHelperTests(unittest.TestCase):
             self.assertIn("Blender-Farsi/README-Windows.txt", names)
             expected = hashlib.sha256(archive.read_bytes()).hexdigest()
             self.assertTrue(checksum.read_text().startswith(expected + "  "))
+            verify(archive, expected_project_commit=project_sha)
 
     def test_refuses_missing_executable_or_runtime_tree(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
