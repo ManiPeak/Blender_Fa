@@ -63,8 +63,9 @@ jobs:
         shell: pwsh
         run: |
           Set-Location $env:BLENDER_SOURCE
-          git lfs install --local
-          if ($LASTEXITCODE -ne 0) { throw "Git LFS setup failed" }
+          $lfsInstallLog = Join-Path $env:RUNNER_TEMP "windows-lfs-install.log"
+          git lfs install --local 2>&1 | Tee-Object -FilePath $lfsInstallLog
+          if ($LASTEXITCODE -ne 0) { throw "Git LFS setup failed: $((Get-Content $lfsInstallLog -Tail 20) -join ' | ')" }
           # Blender marks platform libraries update=none in .gitmodules; set
           # this submodule to checkout explicitly, as Blender's Windows helper does.
           git config --local "submodule.lib/windows_x64.update" "checkout"
@@ -75,16 +76,20 @@ jobs:
           git submodule update --init --depth 1 --progress lib/windows_x64 2>&1 | Tee-Object -FilePath $submoduleLog
           if ($LASTEXITCODE -ne 0) {
             Get-Content $submoduleLog -Tail 50 | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-            throw "Windows x64 library submodule checkout failed"
+            throw "Windows x64 library submodule checkout failed: $((Get-Content $submoduleLog -Tail 20) -join ' | ')"
           }
           $lfsLog = Join-Path $env:RUNNER_TEMP "windows-lfs.log"
           git -C lib/windows_x64 lfs pull 2>&1 | Tee-Object -FilePath $lfsLog
           if ($LASTEXITCODE -ne 0) {
             Get-Content $lfsLog -Tail 50 | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-            throw "Windows x64 Git LFS libraries download failed"
+            throw "Windows x64 Git LFS libraries download failed: $((Get-Content $lfsLog -Tail 20) -join ' | ')"
           }
-          & $env:ComSpec /d /c "make.bat update"
-          if ($LASTEXITCODE -ne 0) { throw "Blender make.bat update failed" }
+          $makeUpdateLog = Join-Path $env:RUNNER_TEMP "windows-make-update.log"
+          & $env:ComSpec /d /c "make.bat update" 2>&1 | Tee-Object -FilePath $makeUpdateLog
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content $makeUpdateLog -Tail 50 | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            throw "Blender make.bat update failed: $((Get-Content $makeUpdateLog -Tail 20) -join ' | ')"
+          }
           $actual = (git rev-parse HEAD).Trim()
           if ($actual -ne $env:BLENDER_UPSTREAM_SHA) {
             throw "Dependency update unexpectedly changed Blender source HEAD to $actual"
@@ -148,19 +153,25 @@ jobs:
             throw
           }
 
-      - name: Surface Windows smoke-test diagnostics
+      - name: Surface Windows build diagnostics
         if: failure()
         shell: pwsh
         run: |
-          $diagnosticPath = Join-Path $env:RUNNER_TEMP "blender-farsi-smoke-diagnostics.txt"
-          if (Test-Path $diagnosticPath) {
-            $detail = (Get-Content $diagnosticPath -Raw).Trim()
-          } else {
-            $detail = "No smoke diagnostic file was produced; inspect the failing step output."
+          $details = [System.Collections.Generic.List[string]]::new()
+          Get-ChildItem $env:RUNNER_TEMP -File -Filter "windows-*.log" -ErrorAction SilentlyContinue | ForEach-Object {
+            $details.Add("--- $($_.Name) ---")
+            (Get-Content $_.FullName -Tail 25) | ForEach-Object { $details.Add([string]$_) }
           }
+          $smokePath = Join-Path $env:RUNNER_TEMP "blender-farsi-smoke-diagnostics.txt"
+          if (Test-Path $smokePath) {
+            $details.Add("--- smoke failure ---")
+            $details.Add((Get-Content $smokePath -Raw).Trim())
+          }
+          if ($details.Count -eq 0) { $details.Add("No captured logs; inspect the failed workflow step.") }
+          $detail = [string]::Join(" | ", $details)
           $detail = $detail -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
           if ($detail.Length -gt 5000) { $detail = $detail.Substring(0, 5000) }
-          [Console]::Out.WriteLine("::error title=Windows smoke details::$detail")
+          [Console]::Out.WriteLine("::error title=Windows build diagnostics::$detail")
 
       - name: Record build metadata and create the Windows package
         shell: pwsh
