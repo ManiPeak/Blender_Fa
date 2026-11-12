@@ -53,18 +53,28 @@ jobs:
 
       - name: Fetch and verify the pinned Blender source
         shell: pwsh
+        env:
+          GIT_LFS_SKIP_SMUDGE: "1"
         run: |
           $lock = Get-Content "$env:GITHUB_WORKSPACE\upstream.lock" -Raw
           $tag = [regex]::Match($lock, '(?m)^tag = "([^"]+)"').Groups[1].Value
           $expected = [regex]::Match($lock, '(?m)^commit = "([0-9a-f]{40})"').Groups[1].Value
           if (-not $tag -or -not $expected) { throw "Could not read upstream.lock" }
           $source = Join-Path $env:GITHUB_WORKSPACE "upstream"
-          git clone --depth 1 --branch $tag https://github.com/blender/blender.git $source
-          if ($LASTEXITCODE -ne 0) { throw "Blender source checkout failed" }
+          "Source tag: $tag; expected commit: $expected" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          $cloneOutput = & git clone --depth 1 --branch $tag https://github.com/blender/blender.git $source 2>&1
+          $cloneExit = $LASTEXITCODE
+          $cloneOutput | ForEach-Object { Write-Host $_ }
+          if ($cloneExit -ne 0) {
+            $cloneOutput | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            throw "Blender source checkout failed with exit code $cloneExit"
+          }
           $actual = (git -C $source rev-parse HEAD).Trim()
           if ($LASTEXITCODE -ne 0 -or $actual -ne $expected) {
+            "Actual source commit: $actual" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
             throw "Pinned source mismatch: expected $expected, got $actual"
           }
+          "Verified Blender source commit: $actual" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           "BLENDER_SOURCE=$source" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "BLENDER_UPSTREAM_SHA=$actual" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
