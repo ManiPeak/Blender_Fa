@@ -84,12 +84,24 @@ jobs:
           Set-Location $env:BLENDER_SOURCE
           git lfs install --local
           if ($LASTEXITCODE -ne 0) { throw "Git LFS setup failed" }
+          # Blender marks platform libraries update=none in .gitmodules; set
+          # this submodule to checkout explicitly, as Blender's Windows helper does.
+          git config --local "submodule.lib/windows_x64.update" "checkout"
+          if ($LASTEXITCODE -ne 0) { throw "Could not enable the Windows library submodule" }
           # Pre-initialize the large library submodule so Blender's Windows
           # helper does not wait for an interactive "download libraries?" prompt.
-          git submodule update --init --depth 1 --progress lib/windows_x64
-          if ($LASTEXITCODE -ne 0) { throw "Windows x64 library submodule checkout failed" }
-          git -C lib/windows_x64 lfs pull
-          if ($LASTEXITCODE -ne 0) { throw "Windows x64 Git LFS libraries download failed" }
+          $submoduleLog = Join-Path $env:RUNNER_TEMP "windows-submodule.log"
+          git submodule update --init --depth 1 --progress lib/windows_x64 2>&1 | Tee-Object -FilePath $submoduleLog
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content $submoduleLog -Tail 50 | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            throw "Windows x64 library submodule checkout failed"
+          }
+          $lfsLog = Join-Path $env:RUNNER_TEMP "windows-lfs.log"
+          git -C lib/windows_x64 lfs pull 2>&1 | Tee-Object -FilePath $lfsLog
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content $lfsLog -Tail 50 | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            throw "Windows x64 Git LFS libraries download failed"
+          }
           & $env:ComSpec /d /c "make.bat update"
           if ($LASTEXITCODE -ne 0) { throw "Blender make.bat update failed" }
           $actual = (git rev-parse HEAD).Trim()
