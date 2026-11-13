@@ -75,6 +75,9 @@ jobs:
             $exe = Join-Path $extract "Blender-Farsi\Blender\blender.exe"
             Write-Host "Executable path: $exe; exists: $(Test-Path $exe)"
             if (-not (Test-Path $exe)) { throw "blender.exe missing after archive extraction; first entries: $((Get-ChildItem $extract -Recurse -File | Select-Object -First 30 -ExpandProperty FullName) -join ', ')" }
+            $startupFiles = Get-ChildItem $extract -Recurse -File -Filter "startup.blend" | Select-Object -ExpandProperty FullName
+            Write-Host "Packaged startup.blend files: $($startupFiles -join ', ')"
+            "Package startup files: $($startupFiles -join ', ')" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
             "BLENDER_PROBE_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           }
           catch {
@@ -117,6 +120,7 @@ jobs:
           $modes = @(
             @{ name = "version"; args = @("--version") },
             @{ name = "background-empty"; args = @("--background") },
+            @{ name = "background-debug"; args = @("--background", "--debug") },
             @{ name = "background-factory"; args = @("--background", "--factory-startup") },
             @{ name = "background-expr"; args = @("--background", "--python-expr", "print('PROBE_EXPR_OK')") },
             @{ name = "background-factory-expr"; args = @("--background", "--factory-startup", "--python-expr", "print('PROBE_EXPR_OK')") },
@@ -136,9 +140,11 @@ jobs:
             $exited = $proc.WaitForExit(90000)
             if (-not $exited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue; $code = "TIMEOUT" } else { $proc.Refresh(); $code = $proc.ExitCode }
             $text = if (Test-Path $env:BLENDER_PROBE_RESULT) { (Get-Content $env:BLENDER_PROBE_RESULT -Raw).Trim() } else { "NO_SCRIPT_RESULT" }
-            $outText = if (Test-Path $stdout) { ((Get-Content $stdout -Tail 20) -join ' ').Trim() } else { "" }
+            $outText = if (Test-Path $stdout) { ((Get-Content $stdout -Tail 8) -join ' ').Trim() } else { "" }
             $errText = if (Test-Path $stderr) { ((Get-Content $stderr -Tail 20) -join ' ').Trim() } else { "" }
             $results.Add("$($mode.name) exit=$code result=$text stdout=$outText stderr=$errText")
+            $applicationErrors = Get-WinEvent -FilterHashtable @{ LogName = "Application"; ProviderName = "Application Error"; StartTime = (Get-Date).AddMinutes(-2) } -MaxEvents 3 -ErrorAction SilentlyContinue | Where-Object { $_.Message -match "blender\\.exe" } | ForEach-Object { $_.Message -replace "`r?`n", " " }
+            foreach ($applicationError in $applicationErrors) { $results.Add("WINDOWS_ERROR $applicationError") }
             $crash = Join-Path $env:TEMP "blender.crash.txt"
             if (Test-Path $crash) { $results.Add("CRASH_LOG $((Get-Content $crash -Tail 25) -join ' | ')"); Remove-Item $crash -Force }
           }
