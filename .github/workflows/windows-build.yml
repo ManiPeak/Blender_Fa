@@ -138,7 +138,9 @@ jobs:
               $env:BLENDER_FARSI_PHASE = $phase
               $env:BLENDER_FARSI_RESULT = Join-Path $env:RUNNER_TEMP "smoke-$phase.result.txt"
               Remove-Item $env:BLENDER_FARSI_RESULT -Force -ErrorAction SilentlyContinue
-              $process = Start-Process -FilePath $exe -ArgumentList "--python `"$smoke`"" -WorkingDirectory $install -PassThru
+              $stdoutPath = Join-Path $env:RUNNER_TEMP "smoke-$phase.stdout.txt"
+              $stderrPath = Join-Path $env:RUNNER_TEMP "smoke-$phase.stderr.txt"
+              $process = Start-Process -FilePath $exe -ArgumentList "--python `"$smoke`"" -WorkingDirectory $install -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
               if (-not $process.WaitForExit(180000)) {
                 Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
                 throw "Blender GUI did not exit within three minutes during phase $phase"
@@ -149,6 +151,11 @@ jobs:
               if ($process.ExitCode -ne 0 -or -not $phaseResult.StartsWith("PASS ")) {
                 "Phase $phase exited with code $($process.ExitCode)" | Set-Content $diagnosticPath
                 $phaseResult | Add-Content $diagnosticPath
+                foreach ($logPath in @($stdoutPath, $stderrPath)) {
+                  if (Test-Path $logPath) {
+                    Get-Content $logPath -Tail 80 | Add-Content $diagnosticPath
+                  }
+                }
                 throw "Blender GUI smoke test failed in phase $phase"
               }
             }

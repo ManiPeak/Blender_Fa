@@ -11,11 +11,20 @@ import os
 import pathlib
 import traceback
 
-import bpy
-
-
 phase = os.environ["BLENDER_FARSI_PHASE"]
 result_path = pathlib.Path(os.environ["BLENDER_FARSI_RESULT"])
+result_path.write_text(f"STARTED phase={phase}\\n", encoding="utf-8")
+
+try:
+    import bpy
+    result_path.write_text(
+        result_path.read_text(encoding="utf-8") + f"BPY_IMPORTED blender={bpy.app.version_string}\\n",
+        encoding="utf-8",
+    )
+except BaseException:
+    result_path.write_text(traceback.format_exc(), encoding="utf-8")
+    raise
+
 expected = {
     "set-fa": "fa_IR",
     "verify-fa": "fa_IR",
@@ -24,8 +33,14 @@ expected = {
 }[phase]
 
 
+def mark(message: str) -> None:
+    with result_path.open("a", encoding="utf-8") as stream:
+        stream.write(f"{message}\\n")
+
+
 def run_test() -> None:
     try:
+        mark("TIMER_ENTERED")
         view = bpy.context.preferences.view
         if not hasattr(bpy.ops.wm, "farsi_set_language"):
             raise RuntimeError("wm.farsi_set_language was not registered in Blender's GUI startup")
@@ -37,12 +52,15 @@ def run_test() -> None:
             # preferences must not discard or save the current .blend document.
             marker = bpy.data.objects.new("unsaved_language_switch_probe", None)
             bpy.context.scene.collection.objects.link(marker)
+            mark("BEFORE_LANGUAGE_OPERATOR")
             result = bpy.ops.wm.farsi_set_language(language=expected)
+            mark(f"AFTER_LANGUAGE_OPERATOR result={result!r}")
             if "FINISHED" not in result:
                 raise RuntimeError(f"Language operator failed: {result!r}")
             if marker.name not in bpy.data.objects:
                 raise RuntimeError("Language switch unexpectedly lost unsaved scene data")
 
+        mark(f"CHECK_LANGUAGE language={view.language} translated={view.use_translate_interface}")
         if view.language != expected or not view.use_translate_interface:
             raise RuntimeError(
                 f"Expected persisted language {expected}, got {view.language}; "

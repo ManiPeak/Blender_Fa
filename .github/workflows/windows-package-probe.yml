@@ -57,15 +57,25 @@ jobs:
       - name: Verify and extract the built application
         shell: pwsh
         run: |
-          $package = Get-ChildItem "$env:GITHUB_WORKSPACE\artifacts" -Filter "*.zip" | Select-Object -First 1
-          if (-not $package) { throw "Downloaded Windows package ZIP not found" }
-          python "$env:GITHUB_WORKSPACE\scripts\verify_windows_package.py" $package.FullName
-          if ($LASTEXITCODE -ne 0) { throw "Package structure validation failed" }
-          $extract = Join-Path $env:RUNNER_TEMP "blender-farsi-probe"
-          Expand-Archive -Path $package.FullName -DestinationPath $extract -Force
-          $exe = Join-Path $extract "Blender-Farsi\Blender\blender.exe"
-          if (-not (Test-Path $exe)) { throw "blender.exe missing after archive extraction" }
-          "BLENDER_PROBE_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          try {
+            $package = Get-ChildItem "$env:GITHUB_WORKSPACE\artifacts" -Filter "*.zip" | Select-Object -First 1
+            if (-not $package) { throw "Downloaded Windows package ZIP not found; files: $((Get-ChildItem $env:GITHUB_WORKSPACE\artifacts -Recurse | ForEach-Object FullName) -join ', ')" }
+            Write-Host "Package path: $($package.FullName); size: $($package.Length)"
+            python "$env:GITHUB_WORKSPACE\scripts\verify_windows_package.py" "$($package.FullName)"
+            $verifyExit = $LASTEXITCODE
+            if ($verifyExit -ne 0) { throw "Package structure validation failed with exit code $verifyExit" }
+            $extract = Join-Path $env:RUNNER_TEMP "blender-farsi-probe"
+            Expand-Archive -Path $package.FullName -DestinationPath $extract -Force
+            $exe = Join-Path $extract "Blender-Farsi\Blender\blender.exe"
+            Write-Host "Executable path: $exe; exists: $(Test-Path $exe)"
+            if (-not (Test-Path $exe)) { throw "blender.exe missing after archive extraction; first entries: $((Get-ChildItem $extract -Recurse -File | Select-Object -First 30 -ExpandProperty FullName) -join ', ')" }
+            "BLENDER_PROBE_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          }
+          catch {
+            $detail = $_.Exception.Message -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
+            [Console]::Out.WriteLine("::error title=Windows package extraction diagnostics::$detail")
+            throw
+          }
 
       - name: Isolate startup, Python, and locale-switch behavior
         shell: pwsh
