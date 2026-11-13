@@ -1,0 +1,163 @@
+name: Diagnose packaged Blender Farsi executable
+
+on:
+  push:
+    paths:
+      - .github/workflows/windows-package-probe.yml
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  probe:
+    name: Probe the latest Windows package without rebuilding
+    runs-on: windows-2022
+    steps:
+      - name: Check out project utilities
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Find the latest Windows build artifact for this branch
+        id: artifact
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $branch = $env:GITHUB_REF_NAME
+          $runs = gh api "repos/$env:GITHUB_REPOSITORY/actions/workflows/windows-build.yml/runs?branch=$branch&per_page=20" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw "Unable to query Windows build runs" }
+          $candidateRuns = $runs.workflow_runs | Sort-Object created_at -Descending
+          $selectedRun = $null
+          $selectedArtifact = $null
+          foreach ($candidate in $candidateRuns) {
+            $response = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$($candidate.id)/artifacts" | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0) { continue }
+            $artifact = $response.artifacts | Where-Object { -not $_.expired -and $_.name -like "Blender-Farsi-Windows-x64-*" } | Select-Object -First 1
+            if ($artifact) { $selectedRun = $candidate; $selectedArtifact = $artifact; break }
+          }
+          if (-not $selectedArtifact) { throw "No unexpired Windows build package found on branch $branch" }
+          "run_id=$($selectedRun.id)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "artifact_name=$($selectedArtifact.name)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "build_run=$($selectedRun.html_url)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "artifact=$($selectedArtifact.name)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+
+      - name: Download the Windows package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.artifact.outputs.artifact_name }}
+          run-id: ${{ steps.artifact.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: artifacts
+
+      - name: Verify and extract the built application
+        shell: pwsh
+        run: |
+          try {
+            $package = Get-ChildItem "$env:GITHUB_WORKSPACE\artifacts" -Filter "*.zip" | Select-Object -First 1
+            if (-not $package) { throw "Downloaded Windows package ZIP not found; files: $((Get-ChildItem $env:GITHUB_WORKSPACE\artifacts -Recurse | ForEach-Object FullName) -join ', ')" }
+            Write-Host "Package path: $($package.FullName); size: $($package.Length)"
+            $metadata = & python -c 'import sys,zipfile; print(zipfile.ZipFile(sys.argv[1]).read("Blender-Farsi/build-info.txt").decode("utf-8-sig"))' "$($package.FullName)" 2>&1
+            $metadataText = [string]::Join(" | ", $metadata)
+            Write-Host "Package metadata: $metadataText"
+            "## Windows package metadata" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            $metadata | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            $verifyOutput = & python "$env:GITHUB_WORKSPACE\scripts\verify_windows_package.py" "$($package.FullName)" 2>&1
+            $verifyExit = $LASTEXITCODE
+            $verifyOutput | ForEach-Object { Write-Host $_ }
+            if ($verifyExit -ne 0) { throw "Package structure validation failed with exit code $verifyExit; metadata=[$metadataText]; $($verifyOutput -join ' | ')" }
+            $extract = Join-Path $env:RUNNER_TEMP "blender-farsi-probe"
+            Expand-Archive -Path $package.FullName -DestinationPath $extract -Force
+            $exe = Join-Path $extract "Blender-Farsi\Blender\blender.exe"
+            Write-Host "Executable path: $exe; exists: $(Test-Path $exe)"
+            if (-not (Test-Path $exe)) { throw "blender.exe missing after archive extraction; first entries: $((Get-ChildItem $extract -Recurse -File | Select-Object -First 30 -ExpandProperty FullName) -join ', ')" }
+            $startupFiles = Get-ChildItem $extract -Recurse -File -Filter "startup.blend" | Select-Object -ExpandProperty FullName
+            Write-Host "Packaged startup.blend files: $($startupFiles -join ', ')"
+            "Package startup files: $($startupFiles -join ', ')" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            "BLENDER_PROBE_STARTUP_FILES=$($startupFiles -join ';')" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            "BLENDER_PROBE_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          }
+          catch {
+            $detail = $_.Exception.Message -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
+            [Console]::Out.WriteLine("::error title=Windows package extraction diagnostics::$detail")
+            throw
+          }
+
+      - name: Isolate startup, Python, and locale-switch behavior
+        shell: pwsh
+        run: |
+          $env:BLENDER_USER_CONFIG = Join-Path $env:RUNNER_TEMP "blender-farsi-probe-config"
+          New-Item -ItemType Directory -Force -Path $env:BLENDER_USER_CONFIG | Out-Null
+          $probe = Join-Path $env:RUNNER_TEMP "probe.py"
+          @'
+          import os
+          import pathlib
+          import traceback
+          result = pathlib.Path(os.environ["BLENDER_PROBE_RESULT"])
+          result.write_text("SCRIPT_ENTERED\n", encoding="utf-8")
+          try:
+              import bpy
+              with result.open("a", encoding="utf-8") as f:
+                  f.write("BPY_IMPORTED " + bpy.app.version_string + "\n")
+                  f.write("OP_REGISTERED " + str(hasattr(bpy.ops.wm, "farsi_set_language")) + "\n")
+                  f.write("MENU_REGISTERED " + str(hasattr(bpy.types, "TOPBAR_MT_farsi_language")) + "\n")
+              phase = os.environ.get("BLENDER_PROBE_PHASE", "boot")
+              if phase == "set-fa":
+                  result.write_text(result.read_text(encoding="utf-8") + "BEFORE_FA_OPERATOR\n", encoding="utf-8")
+                  response = bpy.ops.wm.farsi_set_language(language="fa_IR")
+                  result.write_text(result.read_text(encoding="utf-8") + "AFTER_FA_OPERATOR " + repr(response) + "\n", encoding="utf-8")
+                  bpy.ops.wm.save_userpref()
+                  result.write_text(result.read_text(encoding="utf-8") + "AFTER_SAVE_PREFS\n", encoding="utf-8")
+          except BaseException:
+              with result.open("a", encoding="utf-8") as f:
+                  f.write(traceback.format_exc())
+              raise
+          '@ | Set-Content $probe -Encoding utf8
+          $results = [System.Collections.Generic.List[string]]::new()
+          $results.Add("STARTUP_FILES=$env:BLENDER_PROBE_STARTUP_FILES")
+          $modes = @(
+            @{ name = "version"; args = @("--version") },
+            @{ name = "background-no-config"; args = @("--background"); clearConfig = $true },
+            @{ name = "background-empty"; args = @("--background") },
+            @{ name = "background-debug"; args = @("--background", "--debug") },
+            @{ name = "background-factory"; args = @("--background", "--factory-startup") },
+            @{ name = "background-expr"; args = @("--background", "--python-expr", "print('PROBE_EXPR_OK')") },
+            @{ name = "background-factory-expr"; args = @("--background", "--factory-startup", "--python-expr", "print('PROBE_EXPR_OK')") },
+            @{ name = "background-python"; args = @("--background", "--factory-startup", "--python", $probe) },
+            @{ name = "background-language"; args = @("--background", "--factory-startup", "--python", $probe); phase = "set-fa" },
+            @{ name = "gui-python"; args = @("--factory-startup", "--python", $probe) },
+            @{ name = "gui-language"; args = @("--factory-startup", "--python", $probe); phase = "set-fa" }
+          )
+          foreach ($mode in $modes) {
+            if ($mode.clearConfig) {
+              Remove-Item Env:BLENDER_USER_CONFIG -ErrorAction SilentlyContinue
+            } else {
+              $env:BLENDER_USER_CONFIG = Join-Path $env:RUNNER_TEMP "blender-farsi-probe-config"
+            }
+            $env:BLENDER_PROBE_RESULT = Join-Path $env:RUNNER_TEMP "$($mode.name).txt"
+            $env:BLENDER_PROBE_PHASE = if ($mode.phase) { $mode.phase } else { "boot" }
+            Remove-Item $env:BLENDER_PROBE_RESULT -Force -ErrorAction SilentlyContinue
+            $stdout = Join-Path $env:RUNNER_TEMP "$($mode.name).stdout.txt"
+            $stderr = Join-Path $env:RUNNER_TEMP "$($mode.name).stderr.txt"
+            $arguments = $mode.args -join " "
+            $proc = Start-Process -FilePath $env:BLENDER_PROBE_EXE -ArgumentList $arguments -WorkingDirectory (Split-Path $env:BLENDER_PROBE_EXE) -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+            $exited = $proc.WaitForExit(90000)
+            if (-not $exited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue; $code = "TIMEOUT" } else { $proc.Refresh(); $code = $proc.ExitCode }
+            $text = if (Test-Path $env:BLENDER_PROBE_RESULT) { (Get-Content $env:BLENDER_PROBE_RESULT -Raw).Trim() } else { "NO_SCRIPT_RESULT" }
+            $outText = if (Test-Path $stdout) { ((Get-Content $stdout -Tail 8) -join ' ').Trim() } else { "" }
+            $errText = if (Test-Path $stderr) { ((Get-Content $stderr -Tail 20) -join ' ').Trim() } else { "" }
+            $results.Add("$($mode.name) exit=$code result=$text stdout=$outText stderr=$errText")
+            $applicationErrors = Get-WinEvent -FilterHashtable @{ LogName = "Application"; ProviderName = "Application Error"; StartTime = (Get-Date).AddMinutes(-2) } -MaxEvents 3 -ErrorAction SilentlyContinue | Where-Object { $_.Message -match "blender\\.exe" } | ForEach-Object { $_.Message -replace "`r?`n", " " }
+            foreach ($applicationError in $applicationErrors) { $results.Add("WINDOWS_ERROR $applicationError") }
+            $crash = Join-Path $env:TEMP "blender.crash.txt"
+            if (Test-Path $crash) { $results.Add("CRASH_LOG $((Get-Content $crash -Tail 25) -join ' | ')"); Remove-Item $crash -Force }
+          }
+          $report = [string]::Join(" | ", $results)
+          $report = $report -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
+          if ($report.Length -gt 5000) { $report = $report.Substring(0, 5000) }
+          [Console]::Out.WriteLine("::error title=Packaged Blender diagnostic::$report")
+          throw "Diagnostic probe complete; review the Windows package diagnostic annotation."

@@ -1,0 +1,79 @@
+--- a/scripts/startup/bl_ui/space_topbar.py
++++ b/scripts/startup/bl_ui/space_topbar.py
+@@ -1,6 +1,7 @@
+ # SPDX-FileCopyrightText: 2009-2023 Blender Authors
+ #
+ # SPDX-License-Identifier: GPL-2.0-or-later
++# Blender Farsi modification: adds a native Persian/English language menu (2026).
+ 
+ import bpy
+ from bpy.types import Header, Menu, Panel
+@@ -123,6 +124,59 @@
+ 
+         layout.menu("TOPBAR_MT_window")
+         layout.menu("TOPBAR_MT_help")
++        layout.menu("TOPBAR_MT_farsi_language", text="Language / زبان")
++
++
++class TOPBAR_MT_farsi_language(Menu):
++    bl_idname = "TOPBAR_MT_farsi_language"
++    bl_label = "Language / زبان"
++
++    def draw(self, context):
++        layout = self.layout
++        view = context.preferences.view
++
++        op = layout.operator(
++            "wm.farsi_set_language",
++            text="فارسی",
++            depress=view.language == "fa_IR" and view.use_translate_interface,
++        )
++        op.language = "fa_IR"
++        op = layout.operator(
++            "wm.farsi_set_language",
++            text="English",
++            depress=view.language == "en_US" and view.use_translate_interface,
++        )
++        op.language = "en_US"
++
++
++class WM_OT_farsi_set_language(bpy.types.Operator):
++    """Use Blender's built-in English or Persian interface translation"""
++
++    bl_idname = "wm.farsi_set_language"
++    bl_label = "Set Blender Interface Language"
++    bl_options = {'INTERNAL'}
++
++    language: bpy.props.EnumProperty(
++        name="Language",
++        items=(
++            ("fa_IR", "فارسی", "Use Blender's Persian translation"),
++            ("en_US", "English", "Use Blender's English interface"),
++        ),
++    )
++
++    def execute(self, context):
++        view = context.preferences.view
++        view.language = self.language
++        view.use_translate_interface = True
++
++        # Save user preferences only; the current .blend document is untouched.
++        try:
++            result = bpy.ops.wm.save_userpref()
++        except RuntimeError:
++            result = {'CANCELLED'}
++        if "FINISHED" not in result:
++            self.report({'WARNING'}, "Language changed for this session, but preferences were not saved")
++        return {'FINISHED'}
+ 
+ 
+ class TOPBAR_MT_blender(Menu):
+@@ -826,6 +880,8 @@
+     TOPBAR_MT_file_context_menu,
+     TOPBAR_MT_workspace_menu,
+     TOPBAR_MT_editor_menus,
++    TOPBAR_MT_farsi_language,
++    WM_OT_farsi_set_language,
+     TOPBAR_MT_blender,
+     TOPBAR_MT_blender_system,
+     TOPBAR_MT_file,

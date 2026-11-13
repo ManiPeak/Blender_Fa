@@ -1,0 +1,253 @@
+name: Windows x64 Blender Farsi build
+
+on:
+  pull_request:
+    paths:
+      - "patches/**"
+      - "scripts/**"
+      - "upstream.lock"
+      - ".github/workflows/windows-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: blender-farsi-windows-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows-x64:
+    name: Build, smoke-test, package Windows x64
+    runs-on: windows-2022
+    timeout-minutes: 360
+    steps:
+      - name: Check out Blender Farsi project
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Set up packaging Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Fetch and verify the pinned Blender source
+        shell: pwsh
+        env:
+          GIT_LFS_SKIP_SMUDGE: "1"
+        run: |
+          $lock = Get-Content "$env:GITHUB_WORKSPACE\upstream.lock" -Raw
+          $tag = [regex]::Match($lock, '(?m)^tag = "([^"]+)"').Groups[1].Value
+          $expected = [regex]::Match($lock, '(?m)^commit = "([0-9a-f]{40})"').Groups[1].Value
+          if (-not $tag -or -not $expected) { throw "Could not read upstream.lock" }
+          $source = Join-Path $env:GITHUB_WORKSPACE "upstream"
+          "Source tag: $tag; expected commit: $expected" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          $cloneOutput = & git clone --depth 1 --branch $tag https://github.com/blender/blender.git $source 2>&1
+          $cloneExit = $LASTEXITCODE
+          $cloneOutput | ForEach-Object { Write-Host $_ }
+          if ($cloneExit -ne 0) {
+            $cloneOutput | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            throw "Blender source checkout failed with exit code $cloneExit"
+          }
+          $actual = (git -C $source rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $actual -ne $expected) {
+            "Actual source commit: $actual" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            throw "Pinned source mismatch: expected $expected, got $actual"
+          }
+          "Verified Blender source commit: $actual" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "BLENDER_SOURCE=$source" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "BLENDER_UPSTREAM_SHA=$actual" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Download Blender build dependencies
+        shell: pwsh
+        run: |
+          Set-Location $env:BLENDER_SOURCE
+          $lfsInstallLog = Join-Path $env:RUNNER_TEMP "windows-lfs-install.log"
+          git lfs install --local 2>&1 | Tee-Object -FilePath $lfsInstallLog
+          if ($LASTEXITCODE -ne 0) { throw "Git LFS setup failed: $((Get-Content $lfsInstallLog -Tail 20) -join ' | ')" }
+          # Blender marks platform libraries update=none in .gitmodules; set
+          # this submodule to checkout explicitly, as Blender's Windows helper does.
+          git config --local "submodule.lib/windows_x64.update" "checkout"
+          if ($LASTEXITCODE -ne 0) { throw "Could not enable the Windows library submodule" }
+          # Pre-initialize the large library submodule so Blender's Windows
+          # helper does not wait for an interactive "download libraries?" prompt.
+          $submoduleLog = Join-Path $env:RUNNER_TEMP "windows-submodule.log"
+          git submodule update --init --depth 1 --progress lib/windows_x64 2>&1 | Tee-Object -FilePath $submoduleLog
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content $submoduleLog -Tail 50 | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            throw "Windows x64 library submodule checkout failed: $((Get-Content $submoduleLog -Tail 20) -join ' | ')"
+          }
+          $lfsLog = Join-Path $env:RUNNER_TEMP "windows-lfs.log"
+          git -C lib/windows_x64 lfs pull 2>&1 | Tee-Object -FilePath $lfsLog
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content $lfsLog -Tail 50 | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            throw "Windows x64 Git LFS libraries download failed: $((Get-Content $lfsLog -Tail 20) -join ' | ')"
+          }
+          $makeUpdateLog = Join-Path $env:RUNNER_TEMP "windows-make-update.log"
+          & $env:ComSpec /d /c "make.bat update" 2>&1 | Tee-Object -FilePath $makeUpdateLog
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content $makeUpdateLog -Tail 50 | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            throw "Blender make.bat update failed: $((Get-Content $makeUpdateLog -Tail 20) -join ' | ')"
+          }
+          $actual = (git rev-parse HEAD).Trim()
+          if ($actual -ne $env:BLENDER_UPSTREAM_SHA) {
+            throw "Dependency update unexpectedly changed Blender source HEAD to $actual"
+          }
+
+      - name: Apply the Blender Farsi source patch
+        shell: pwsh
+        run: |
+          git -C $env:BLENDER_SOURCE apply --check "$env:GITHUB_WORKSPACE\patches\0001-topbar-language-selector.patch"
+          if ($LASTEXITCODE -ne 0) { throw "Patch does not apply to the pinned source" }
+          git -C $env:BLENDER_SOURCE apply "$env:GITHUB_WORKSPACE\patches\0001-topbar-language-selector.patch"
+          if ($LASTEXITCODE -ne 0) { throw "Applying the Blender Farsi patch failed" }
+          python -m py_compile "$env:BLENDER_SOURCE\scripts\startup\bl_ui\space_topbar.py"
+          if ($LASTEXITCODE -ne 0) { throw "Patched Blender startup module has invalid Python syntax" }
+
+      - name: Build Blender with the upstream Windows build wrapper
+        shell: pwsh
+        run: |
+          Set-Location $env:BLENDER_SOURCE
+          & $env:ComSpec /d /c "make.bat release x64 2022"
+          if ($LASTEXITCODE -ne 0) { throw "Blender Windows x64 build failed" }
+
+      - name: Run executable and language-persistence smoke tests
+        id: windows-smoke
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $diagnosticPath = Join-Path $env:RUNNER_TEMP "blender-farsi-smoke-diagnostics.txt"
+          try {
+            $parent = Split-Path $env:BLENDER_SOURCE -Parent
+            $build = Get-ChildItem $parent -Directory -Filter "build_windows_Release_x64_vc*_Release" | Select-Object -First 1
+            if (-not $build) { throw "Could not find Blender's Windows release build directory under $parent" }
+            $install = Join-Path $build.FullName "bin\Release"
+            $exe = Join-Path $install "blender.exe"
+            if (-not (Test-Path $exe)) { throw "Built blender.exe missing at $exe" }
+            $versionOutput = & $exe --version 2>&1
+            $versionExit = $LASTEXITCODE
+            $versionOutput | ForEach-Object { Write-Host $_ }
+            if ($versionExit -ne 0) { throw "blender.exe --version failed with exit code $versionExit; $($versionOutput -join ' | ')" }
+            $env:BLENDER_USER_CONFIG = Join-Path $env:RUNNER_TEMP "blender-farsi-user-config"
+            New-Item -ItemType Directory -Force -Path $env:BLENDER_USER_CONFIG | Out-Null
+            "BLENDER_INSTALL=$install" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            "BLENDER_BUILD_DIR=$($build.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            $smoke = Join-Path $env:GITHUB_WORKSPACE "scripts\windows_smoke.py"
+            foreach ($phase in @("set-fa", "verify-fa", "set-en", "verify-en")) {
+              $env:BLENDER_FARSI_PHASE = $phase
+              $env:BLENDER_FARSI_RESULT = Join-Path $env:RUNNER_TEMP "smoke-$phase.result.txt"
+              Remove-Item $env:BLENDER_FARSI_RESULT -Force -ErrorAction SilentlyContinue
+              $stdoutPath = Join-Path $env:RUNNER_TEMP "smoke-$phase.stdout.txt"
+              $stderrPath = Join-Path $env:RUNNER_TEMP "smoke-$phase.stderr.txt"
+              $process = Start-Process -FilePath $exe -ArgumentList "--python `"$smoke`"" -WorkingDirectory $install -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+              if (-not $process.WaitForExit(180000)) {
+                Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+                throw "Blender GUI did not exit within three minutes during phase $phase"
+              }
+              $process.Refresh()
+              $phaseResult = if (Test-Path $env:BLENDER_FARSI_RESULT) { Get-Content $env:BLENDER_FARSI_RESULT -Raw } else { "No result file; process exit code $($process.ExitCode)" }
+              Write-Host $phaseResult
+              if ($process.ExitCode -ne 0 -or -not $phaseResult.StartsWith("PASS ")) {
+                "Phase $phase exited with code $($process.ExitCode)" | Set-Content $diagnosticPath
+                $phaseResult | Add-Content $diagnosticPath
+                foreach ($logPath in @($stdoutPath, $stderrPath)) {
+                  if (Test-Path $logPath) {
+                    Get-Content $logPath -Tail 80 | Add-Content $diagnosticPath
+                  }
+                }
+                throw "Blender GUI smoke test failed in phase $phase"
+              }
+            }
+          }
+          catch {
+            $detail = $_.Exception.Message
+            if (Test-Path $diagnosticPath) { $detail += " | " + ((Get-Content $diagnosticPath -Raw).Trim()) }
+            $detail = $detail -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
+            if ($detail.Length -gt 5000) { $detail = $detail.Substring(0, 5000) }
+            [Console]::Out.WriteLine("::error title=Windows Blender smoke diagnostics::$detail")
+            throw
+          }
+
+      - name: Surface Windows build diagnostics
+        if: failure() || steps.windows-smoke.outcome == 'failure'
+        shell: pwsh
+        run: |
+          $details = [System.Collections.Generic.List[string]]::new()
+          Get-ChildItem $env:RUNNER_TEMP -File -Filter "windows-*.log" -ErrorAction SilentlyContinue | ForEach-Object {
+            $details.Add("--- $($_.Name) ---")
+            (Get-Content $_.FullName -Tail 25) | ForEach-Object { $details.Add([string]$_) }
+          }
+          $smokePath = Join-Path $env:RUNNER_TEMP "blender-farsi-smoke-diagnostics.txt"
+          if (Test-Path $smokePath) {
+            $details.Add("--- smoke failure ---")
+            $details.Add((Get-Content $smokePath -Raw).Trim())
+          }
+          if ($details.Count -eq 0) { $details.Add("No captured logs; inspect the failed workflow step.") }
+          $detail = [string]::Join(" | ", $details)
+          $detail = $detail -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
+          if ($detail.Length -gt 5000) { $detail = $detail.Substring(0, 5000) }
+          [Console]::Out.WriteLine("::error title=Windows build diagnostics::$detail")
+
+      - name: Record build metadata and create the Windows package
+        shell: pwsh
+        run: |
+          $version = "prototype-build-$env:GITHUB_RUN_NUMBER"
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsVersion = "unknown"
+          if (Test-Path $vswhere) {
+            $vsVersion = (& $vswhere -latest -products * -property catalog_productDisplayVersion).Trim()
+          }
+          $msvcRoot = & $vswhere -latest -products * -property installationPath
+          $compiler = "Visual Studio $vsVersion"
+          if ($msvcRoot) {
+            $compilerDirs = Get-ChildItem (Join-Path $msvcRoot "VC\Tools\MSVC") -Directory -ErrorAction SilentlyContinue | Sort-Object Name
+            if ($compilerDirs) { $compiler += "; MSVC toolset $($compilerDirs[-1].Name)" }
+          }
+          $artifacts = Join-Path $env:GITHUB_WORKSPACE "artifacts"
+          New-Item -ItemType Directory -Force -Path $artifacts | Out-Null
+          $projectSha = (git -C $env:GITHUB_WORKSPACE rev-parse HEAD).Trim()
+          @(
+            "Product: Blender Farsi prerelease"
+            "Blender version: 4.5.9 LTS"
+            "Blender source commit: $env:BLENDER_UPSTREAM_SHA"
+            "Blender Farsi project commit: $projectSha"
+            "Build OS: $([System.Environment]::OSVersion.VersionString)"
+            "Runner image: windows-2022"
+            "Compiler: $compiler"
+            "Build configuration: upstream make.bat release x64 2022"
+            "Dependencies: pinned by the Blender source revision; retrieved with make.bat update"
+            "Build log workflow: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          ) | Set-Content (Join-Path $artifacts "build-info.txt") -Encoding utf8
+          python "$env:GITHUB_WORKSPACE\scripts\package_windows.py" `
+            --install-dir $env:BLENDER_INSTALL `
+            --project-root $env:GITHUB_WORKSPACE `
+            --upstream-root $env:BLENDER_SOURCE `
+            --output-dir $artifacts `
+            --version $version `
+            --build-info (Join-Path $artifacts "build-info.txt")
+          if ($LASTEXITCODE -ne 0) { throw "Windows package creation failed" }
+          $zip = Get-ChildItem $artifacts -Filter "*.zip" | Select-Object -First 1
+          $sha = (Get-FileHash $zip.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          $line = Get-Content "$($zip.FullName).sha256" -Raw
+          if (-not $line.StartsWith($sha)) { throw "Generated package checksum verification failed" }
+          "BLENDER_PACKAGE=$($zip.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "BLENDER_CHECKSUM=$($zip.FullName).sha256" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Verified SHA-256 $sha"
+
+      - name: Upload the verified package as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Blender-Farsi-Windows-x64-${{ github.run_number }}
+          path: |
+            artifacts/*.zip
+            artifacts/*.sha256
+            artifacts/build-info.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Require passing Windows GUI smoke tests
+        if: steps.windows-smoke.outcome == 'failure'
+        shell: pwsh
+        run: |
+          throw "The Blender executable was built and packaged, but GUI language-switch smoke tests failed; refusing to mark the build successful."

@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="420" viewBox="0 0 1440 420" role="img" aria-labelledby="title desc">
+  <title id="title">Blender Farsi — Blender, refined for Persian creators</title>
+  <desc id="desc">Original abstract dark-indigo project banner with layered translucent shapes, Persian typography, and a subtle blue accent.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#171a21"/><stop offset="0.57" stop-color="#222936"/><stop offset="1" stop-color="#171d29"/>
+    </linearGradient>
+    <linearGradient id="glow" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#89a8ff" stop-opacity=".26"/><stop offset="1" stop-color="#6c7bd8" stop-opacity=".02"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#d7e2ff" stop-opacity=".2"/><stop offset="1" stop-color="#d7e2ff" stop-opacity=".025"/>
+    </linearGradient>
+    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="34"/></filter>
+  </defs>
+  <rect width="1440" height="420" rx="28" fill="url(#bg)"/>
+  <ellipse cx="1130" cy="100" rx="260" ry="180" fill="#687ed6" opacity=".19" filter="url(#soft)"/>
+  <ellipse cx="980" cy="375" rx="280" ry="100" fill="#426997" opacity=".12" filter="url(#soft)"/>
+  <g fill="url(#glow)" stroke="url(#edge)">
+    <rect x="910" y="74" width="330" height="236" rx="28" transform="rotate(-9 1075 192)"/>
+    <rect x="1010" y="116" width="270" height="190" rx="26" transform="rotate(8 1145 211)"/>
+    <rect x="1120" y="163" width="170" height="132" rx="22" transform="rotate(-3 1205 229)"/>
+  </g>
+  <path d="M74 326h1288" stroke="#dfe7fa" stroke-opacity=".12"/>
+  <circle cx="92" cy="90" r="5" fill="#9db6ff"/>
+  <text x="90" y="183" fill="#eef2fb" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="65" font-weight="650" letter-spacing="-2">Blender Farsi</text>
+  <text x="94" y="231" fill="#c0c9d8" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="23">Blender, refined for Persian creators.</text>
+  <text x="94" y="278" fill="#d5dced" font-family="Tahoma, Arial, sans-serif" font-size="23">بلندر؛ با ظاهری مدرن‌تر برای خالقان فارسی‌زبان.</text>
+  <text x="94" y="373" fill="#8793a8" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" letter-spacing="2.5">INDEPENDENT OPEN-SOURCE UI LOCALIZATION PROTOTYPE</text>
+</svg>
