@@ -1,0 +1,128 @@
+name: Diagnose packaged Blender Farsi executable
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  probe:
+    name: Probe the latest Windows package without rebuilding
+    runs-on: windows-2022
+    steps:
+      - name: Check out project utilities
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Find the latest Windows build artifact for this branch
+        id: artifact
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $branch = $env:GITHUB_REF_NAME
+          $runs = gh api "repos/$env:GITHUB_REPOSITORY/actions/workflows/windows-build.yml/runs?branch=$branch&per_page=20" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw "Unable to query Windows build runs" }
+          $candidateRuns = $runs.workflow_runs | Sort-Object created_at -Descending
+          $selectedRun = $null
+          $selectedArtifact = $null
+          foreach ($candidate in $candidateRuns) {
+            $response = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$($candidate.id)/artifacts" | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0) { continue }
+            $artifact = $response.artifacts | Where-Object { -not $_.expired -and $_.name -like "Blender-Farsi-Windows-x64-*" } | Select-Object -First 1
+            if ($artifact) { $selectedRun = $candidate; $selectedArtifact = $artifact; break }
+          }
+          if (-not $selectedArtifact) { throw "No unexpired Windows build package found on branch $branch" }
+          "run_id=$($selectedRun.id)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "artifact_name=$($selectedArtifact.name)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "build_run=$($selectedRun.html_url)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "artifact=$($selectedArtifact.name)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+
+      - name: Download the Windows package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.artifact.outputs.artifact_name }}
+          run-id: ${{ steps.artifact.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: artifacts
+
+      - name: Verify and extract the built application
+        shell: pwsh
+        run: |
+          $package = Get-ChildItem "$env:GITHUB_WORKSPACE\artifacts" -Filter "*.zip" | Select-Object -First 1
+          if (-not $package) { throw "Downloaded Windows package ZIP not found" }
+          python "$env:GITHUB_WORKSPACE\scripts\verify_windows_package.py" $package.FullName
+          if ($LASTEXITCODE -ne 0) { throw "Package structure validation failed" }
+          $extract = Join-Path $env:RUNNER_TEMP "blender-farsi-probe"
+          Expand-Archive -Path $package.FullName -DestinationPath $extract -Force
+          $exe = Join-Path $extract "Blender-Farsi\Blender\blender.exe"
+          if (-not (Test-Path $exe)) { throw "blender.exe missing after archive extraction" }
+          "BLENDER_PROBE_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Isolate startup, Python, and locale-switch behavior
+        shell: pwsh
+        run: |
+          $env:BLENDER_USER_CONFIG = Join-Path $env:RUNNER_TEMP "blender-farsi-probe-config"
+          New-Item -ItemType Directory -Force -Path $env:BLENDER_USER_CONFIG | Out-Null
+          $probe = Join-Path $env:RUNNER_TEMP "probe.py"
+          @'
+          import os
+          import pathlib
+          import traceback
+          result = pathlib.Path(os.environ["BLENDER_PROBE_RESULT"])
+          result.write_text("SCRIPT_ENTERED\n", encoding="utf-8")
+          try:
+              import bpy
+              with result.open("a", encoding="utf-8") as f:
+                  f.write("BPY_IMPORTED " + bpy.app.version_string + "\n")
+                  f.write("OP_REGISTERED " + str(hasattr(bpy.ops.wm, "farsi_set_language")) + "\n")
+                  f.write("MENU_REGISTERED " + str(hasattr(bpy.types, "TOPBAR_MT_farsi_language")) + "\n")
+              phase = os.environ.get("BLENDER_PROBE_PHASE", "boot")
+              if phase == "set-fa":
+                  result.write_text(result.read_text(encoding="utf-8") + "BEFORE_FA_OPERATOR\n", encoding="utf-8")
+                  response = bpy.ops.wm.farsi_set_language(language="fa_IR")
+                  result.write_text(result.read_text(encoding="utf-8") + "AFTER_FA_OPERATOR " + repr(response) + "\n", encoding="utf-8")
+                  bpy.ops.wm.save_userpref()
+                  result.write_text(result.read_text(encoding="utf-8") + "AFTER_SAVE_PREFS\n", encoding="utf-8")
+          except BaseException:
+              with result.open("a", encoding="utf-8") as f:
+                  f.write(traceback.format_exc())
+              raise
+          '@ | Set-Content $probe -Encoding utf8
+          $results = [System.Collections.Generic.List[string]]::new()
+          $modes = @(
+            @{ name = "background-expr"; args = @("--background", "--python-expr", "print('PROBE_EXPR_OK')") },
+            @{ name = "background-python"; args = @("--background", "--python", $probe) },
+            @{ name = "background-language"; args = @("--background", "--python", $probe); phase = "set-fa" },
+            @{ name = "gui-python"; args = @("--python", $probe) },
+            @{ name = "gui-language"; args = @("--python", $probe); phase = "set-fa" }
+          )
+          foreach ($mode in $modes) {
+            $env:BLENDER_PROBE_RESULT = Join-Path $env:RUNNER_TEMP "$($mode.name).txt"
+            $env:BLENDER_PROBE_PHASE = if ($mode.phase) { $mode.phase } else { "boot" }
+            Remove-Item $env:BLENDER_PROBE_RESULT -Force -ErrorAction SilentlyContinue
+            if ($mode.name.StartsWith("gui")) {
+              $arguments = $mode.args -join " "
+              $proc = Start-Process -FilePath $env:BLENDER_PROBE_EXE -ArgumentList $arguments -WorkingDirectory (Split-Path $env:BLENDER_PROBE_EXE) -PassThru
+              $exited = $proc.WaitForExit(90000)
+              if (-not $exited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue; $code = "TIMEOUT" } else { $proc.Refresh(); $code = $proc.ExitCode }
+            } else {
+              & $env:BLENDER_PROBE_EXE @($mode.args) 2>&1 | Tee-Object -Variable output | Out-Null
+              $code = $LASTEXITCODE
+            }
+            $text = if (Test-Path $env:BLENDER_PROBE_RESULT) { (Get-Content $env:BLENDER_PROBE_RESULT -Raw).Trim() } else { "NO_SCRIPT_RESULT" }
+            $results.Add("$($mode.name) exit=$code result=$text")
+            $crash = Join-Path $env:TEMP "blender.crash.txt"
+            if (Test-Path $crash) { $results.Add("CRASH_LOG $((Get-Content $crash -Tail 25) -join ' | ')"); Remove-Item $crash -Force }
+          }
+          $report = [string]::Join(" | ", $results)
+          $report = $report -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
+          if ($report.Length -gt 5000) { $report = $report.Substring(0, 5000) }
+          [Console]::Out.WriteLine("::error title=Packaged Blender diagnostic::$report")
+          throw "Diagnostic probe complete; review the Windows package diagnostic annotation."
