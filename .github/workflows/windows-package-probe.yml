@@ -1,7 +1,9 @@
 name: Diagnose packaged Blender Farsi executable
 
 on:
-  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/windows-package-probe.yml
 
 permissions:
   actions: read
