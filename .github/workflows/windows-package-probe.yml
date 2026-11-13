@@ -64,6 +64,8 @@ jobs:
             $metadata = & python -c 'import sys,zipfile; print(zipfile.ZipFile(sys.argv[1]).read("Blender-Farsi/build-info.txt").decode("utf-8-sig"))' "$($package.FullName)" 2>&1
             $metadataText = [string]::Join(" | ", $metadata)
             Write-Host "Package metadata: $metadataText"
+            "## Windows package metadata" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            $metadata | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
             $verifyOutput = & python "$env:GITHUB_WORKSPACE\scripts\verify_windows_package.py" "$($package.FullName)" 2>&1
             $verifyExit = $LASTEXITCODE
             $verifyOutput | ForEach-Object { Write-Host $_ }

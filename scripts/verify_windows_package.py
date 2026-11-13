@@ -32,7 +32,9 @@ def verify(path: pathlib.Path, expected_project_commit: str | None = None) -> No
         exe = files["Blender-Farsi/Blender/blender.exe"]
         if exe.file_size < 1024 * 1024:
             raise RuntimeError(f"Packaged blender.exe is unexpectedly small ({exe.file_size} bytes)")
-        metadata = archive.read("Blender-Farsi/build-info.txt").decode("utf-8-sig")
+        # PowerShell Set-Content writes CRLF on Windows; normalize before applying
+        # strict line-anchored metadata checks.
+        metadata = archive.read("Blender-Farsi/build-info.txt").decode("utf-8-sig").replace("\r\n", "\n")
         lock_path = pathlib.Path(__file__).resolve().parents[1] / "upstream.lock"
         expected_upstream = tomllib.loads(lock_path.read_text(encoding="utf-8"))["commit"]
         upstream = re.search(r"^Blender source commit: ([0-9a-f]{40})$", metadata, re.M)
