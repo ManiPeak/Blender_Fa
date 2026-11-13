@@ -116,11 +116,14 @@ jobs:
           $results = [System.Collections.Generic.List[string]]::new()
           $modes = @(
             @{ name = "version"; args = @("--version") },
+            @{ name = "background-empty"; args = @("--background") },
+            @{ name = "background-factory"; args = @("--background", "--factory-startup") },
             @{ name = "background-expr"; args = @("--background", "--python-expr", "print('PROBE_EXPR_OK')") },
-            @{ name = "background-python"; args = @("--background", "--python", $probe) },
-            @{ name = "background-language"; args = @("--background", "--python", $probe); phase = "set-fa" },
-            @{ name = "gui-python"; args = @("--python", $probe) },
-            @{ name = "gui-language"; args = @("--python", $probe); phase = "set-fa" }
+            @{ name = "background-factory-expr"; args = @("--background", "--factory-startup", "--python-expr", "print('PROBE_EXPR_OK')") },
+            @{ name = "background-python"; args = @("--background", "--factory-startup", "--python", $probe) },
+            @{ name = "background-language"; args = @("--background", "--factory-startup", "--python", $probe); phase = "set-fa" },
+            @{ name = "gui-python"; args = @("--factory-startup", "--python", $probe) },
+            @{ name = "gui-language"; args = @("--factory-startup", "--python", $probe); phase = "set-fa" }
           )
           foreach ($mode in $modes) {
             $env:BLENDER_PROBE_RESULT = Join-Path $env:RUNNER_TEMP "$($mode.name).txt"
