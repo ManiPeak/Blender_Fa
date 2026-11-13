@@ -61,10 +61,13 @@ jobs:
             $package = Get-ChildItem "$env:GITHUB_WORKSPACE\artifacts" -Filter "*.zip" | Select-Object -First 1
             if (-not $package) { throw "Downloaded Windows package ZIP not found; files: $((Get-ChildItem $env:GITHUB_WORKSPACE\artifacts -Recurse | ForEach-Object FullName) -join ', ')" }
             Write-Host "Package path: $($package.FullName); size: $($package.Length)"
+            $metadata = & python -c 'import sys,zipfile; print(zipfile.ZipFile(sys.argv[1]).read("Blender-Farsi/build-info.txt").decode("utf-8-sig"))' "$($package.FullName)" 2>&1
+            $metadataText = [string]::Join(" | ", $metadata)
+            Write-Host "Package metadata: $metadataText"
             $verifyOutput = & python "$env:GITHUB_WORKSPACE\scripts\verify_windows_package.py" "$($package.FullName)" 2>&1
             $verifyExit = $LASTEXITCODE
             $verifyOutput | ForEach-Object { Write-Host $_ }
-            if ($verifyExit -ne 0) { throw "Package structure validation failed with exit code $verifyExit; $($verifyOutput -join ' | ')" }
+            if ($verifyExit -ne 0) { throw "Package structure validation failed with exit code $verifyExit; metadata=[$metadataText]; $($verifyOutput -join ' | ')" }
             $extract = Join-Path $env:RUNNER_TEMP "blender-farsi-probe"
             Expand-Archive -Path $package.FullName -DestinationPath $extract -Force
             $exe = Join-Path $extract "Blender-Farsi\Blender\blender.exe"
