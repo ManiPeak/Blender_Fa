@@ -115,6 +115,7 @@ jobs:
           '@ | Set-Content $probe -Encoding utf8
           $results = [System.Collections.Generic.List[string]]::new()
           $modes = @(
+            @{ name = "version"; args = @("--version") },
             @{ name = "background-expr"; args = @("--background", "--python-expr", "print('PROBE_EXPR_OK')") },
             @{ name = "background-python"; args = @("--background", "--python", $probe) },
             @{ name = "background-language"; args = @("--background", "--python", $probe); phase = "set-fa" },
@@ -125,17 +126,16 @@ jobs:
             $env:BLENDER_PROBE_RESULT = Join-Path $env:RUNNER_TEMP "$($mode.name).txt"
             $env:BLENDER_PROBE_PHASE = if ($mode.phase) { $mode.phase } else { "boot" }
             Remove-Item $env:BLENDER_PROBE_RESULT -Force -ErrorAction SilentlyContinue
-            if ($mode.name.StartsWith("gui")) {
-              $arguments = $mode.args -join " "
-              $proc = Start-Process -FilePath $env:BLENDER_PROBE_EXE -ArgumentList $arguments -WorkingDirectory (Split-Path $env:BLENDER_PROBE_EXE) -PassThru
-              $exited = $proc.WaitForExit(90000)
-              if (-not $exited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue; $code = "TIMEOUT" } else { $proc.Refresh(); $code = $proc.ExitCode }
-            } else {
-              & $env:BLENDER_PROBE_EXE @($mode.args) 2>&1 | Tee-Object -Variable output | Out-Null
-              $code = $LASTEXITCODE
-            }
+            $stdout = Join-Path $env:RUNNER_TEMP "$($mode.name).stdout.txt"
+            $stderr = Join-Path $env:RUNNER_TEMP "$($mode.name).stderr.txt"
+            $arguments = $mode.args -join " "
+            $proc = Start-Process -FilePath $env:BLENDER_PROBE_EXE -ArgumentList $arguments -WorkingDirectory (Split-Path $env:BLENDER_PROBE_EXE) -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+            $exited = $proc.WaitForExit(90000)
+            if (-not $exited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue; $code = "TIMEOUT" } else { $proc.Refresh(); $code = $proc.ExitCode }
             $text = if (Test-Path $env:BLENDER_PROBE_RESULT) { (Get-Content $env:BLENDER_PROBE_RESULT -Raw).Trim() } else { "NO_SCRIPT_RESULT" }
-            $results.Add("$($mode.name) exit=$code result=$text")
+            $outText = if (Test-Path $stdout) { ((Get-Content $stdout -Tail 20) -join ' ').Trim() } else { "" }
+            $errText = if (Test-Path $stderr) { ((Get-Content $stderr -Tail 20) -join ' ').Trim() } else { "" }
+            $results.Add("$($mode.name) exit=$code result=$text stdout=$outText stderr=$errText")
             $crash = Join-Path $env:TEMP "blender.crash.txt"
             if (Test-Path $crash) { $results.Add("CRASH_LOG $((Get-Content $crash -Tail 25) -join ' | ')"); Remove-Item $crash -Force }
           }
