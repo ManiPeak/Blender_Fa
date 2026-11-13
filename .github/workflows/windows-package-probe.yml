@@ -78,6 +78,7 @@ jobs:
             $startupFiles = Get-ChildItem $extract -Recurse -File -Filter "startup.blend" | Select-Object -ExpandProperty FullName
             Write-Host "Packaged startup.blend files: $($startupFiles -join ', ')"
             "Package startup files: $($startupFiles -join ', ')" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            "BLENDER_PROBE_STARTUP_FILES=$($startupFiles -join ';')" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
             "BLENDER_PROBE_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           }
           catch {
@@ -117,8 +118,10 @@ jobs:
               raise
           '@ | Set-Content $probe -Encoding utf8
           $results = [System.Collections.Generic.List[string]]::new()
+          $results.Add("STARTUP_FILES=$env:BLENDER_PROBE_STARTUP_FILES")
           $modes = @(
             @{ name = "version"; args = @("--version") },
+            @{ name = "background-no-config"; args = @("--background"); clearConfig = $true },
             @{ name = "background-empty"; args = @("--background") },
             @{ name = "background-debug"; args = @("--background", "--debug") },
             @{ name = "background-factory"; args = @("--background", "--factory-startup") },
@@ -130,6 +133,11 @@ jobs:
             @{ name = "gui-language"; args = @("--factory-startup", "--python", $probe); phase = "set-fa" }
           )
           foreach ($mode in $modes) {
+            if ($mode.clearConfig) {
+              Remove-Item Env:BLENDER_USER_CONFIG -ErrorAction SilentlyContinue
+            } else {
+              $env:BLENDER_USER_CONFIG = Join-Path $env:RUNNER_TEMP "blender-farsi-probe-config"
+            }
             $env:BLENDER_PROBE_RESULT = Join-Path $env:RUNNER_TEMP "$($mode.name).txt"
             $env:BLENDER_PROBE_PHASE = if ($mode.phase) { $mode.phase } else { "boot" }
             Remove-Item $env:BLENDER_PROBE_RESULT -Force -ErrorAction SilentlyContinue
